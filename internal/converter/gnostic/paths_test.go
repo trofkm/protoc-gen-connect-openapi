@@ -22,6 +22,7 @@ import (
 	"github.com/pb33f/go-yaml"
 	"github.com/pb33f/libopenapi/datamodel/high/base"
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
+	"github.com/pb33f/libopenapi/orderedmap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -266,6 +267,91 @@ func TestPathItemWithMethodAnnotations_ParameterMerging(t *testing.T) {
 		assert.Equal(t, "Original page description", pageParam.Description, "should preserve original description")
 		// The schema should have been merged with format from gnostic annotation
 		assert.Equal(t, "int32", pageParam.Schema.Schema().Format)
+	})
+}
+
+func TestPathItemWithMethodAnnotations_RequestBodyMerge(t *testing.T) {
+	t.Parallel()
+
+	newGeneratedBody := func() *v3.RequestBody {
+		content := orderedmap.New[string, *v3.MediaType]()
+		content.Set("application/json", &v3.MediaType{
+			Schema: base.CreateSchemaProxyRef("#/components/schemas/repro.v1.CreateItemRequest"),
+		})
+		required := true
+		return &v3.RequestBody{Content: content, Required: &required}
+	}
+
+	annotatedBody := func(mediaType *goa3.MediaType, required bool) *goa3.RequestBodyOrReference {
+		return &goa3.RequestBodyOrReference{
+			Oneof: &goa3.RequestBodyOrReference_RequestBody{
+				RequestBody: &goa3.RequestBody{
+					Required: required,
+					Content: &goa3.MediaTypes{
+						AdditionalProperties: []*goa3.NamedMediaType{
+							{Name: "application/json", Value: mediaType},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	run := func(t *testing.T, body *goa3.RequestBodyOrReference) *v3.PathItem {
+		t.Helper()
+		item := &v3.PathItem{Post: &v3.Operation{RequestBody: newGeneratedBody()}}
+		methodOpts := &descriptorpb.MethodOptions{}
+		proto.SetExtension(methodOpts, goa3.E_Operation, &goa3.Operation{RequestBody: body})
+		md := &mockMethodDescriptor{options: methodOpts}
+		return PathItemWithMethodAnnotations(options.Options{}, item, md)
+	}
+
+	t.Run("keeps the generated schema and requirement when the annotation only sets an example", func(t *testing.T) {
+		t.Parallel()
+		result := run(t, annotatedBody(&goa3.MediaType{
+			Example: &goa3.Any{Yaml: "{name: item-1}"},
+		}, false))
+
+		require.NotNil(t, result.Post)
+		require.NotNil(t, result.Post.RequestBody)
+		require.NotNil(t, result.Post.RequestBody.Required)
+		assert.True(t, *result.Post.RequestBody.Required)
+		mediaType, ok := result.Post.RequestBody.Content.Get("application/json")
+		require.True(t, ok)
+		require.NotNil(t, mediaType.Schema)
+		assert.Equal(t, "#/components/schemas/repro.v1.CreateItemRequest", mediaType.Schema.GetReference())
+		require.NotNil(t, mediaType.Example)
+		out, err := yaml.Marshal(mediaType.Example)
+		require.NoError(t, err)
+		assert.YAMLEq(t, "name: item-1\n", string(out))
+	})
+
+	t.Run("annotation schema overrides the generated one", func(t *testing.T) {
+		t.Parallel()
+		result := run(t, annotatedBody(&goa3.MediaType{
+			Schema: &goa3.SchemaOrReference{
+				Oneof: &goa3.SchemaOrReference_Schema{
+					Schema: &goa3.Schema{Type: "string"},
+				},
+			},
+		}, true))
+
+		mediaType, ok := result.Post.RequestBody.Content.Get("application/json")
+		require.True(t, ok)
+		require.NotNil(t, mediaType.Schema)
+		assert.Equal(t, []string{"string"}, mediaType.Schema.Schema().Type)
+	})
+
+	t.Run("referenced body replaces the generated one", func(t *testing.T) {
+		t.Parallel()
+		result := run(t, &goa3.RequestBodyOrReference{
+			Oneof: &goa3.RequestBodyOrReference_Reference{
+				Reference: &goa3.Reference{XRef: "#/components/requestBodies/CreateItem"},
+			},
+		})
+
+		require.NotNil(t, result.Post.RequestBody)
+		assert.Equal(t, "#/components/requestBodies/CreateItem", result.Post.RequestBody.Reference)
 	})
 }
 

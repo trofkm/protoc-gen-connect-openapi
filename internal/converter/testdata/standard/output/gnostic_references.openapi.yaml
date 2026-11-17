@@ -124,6 +124,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/standard.GnosticNote'
+        required: true
       responses:
         default:
           description: Error

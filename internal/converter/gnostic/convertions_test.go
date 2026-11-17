@@ -42,6 +42,44 @@ func TestToLinks(t *testing.T) {
 	assert.Equal(t, "#/components/links/Other", link.Reference)
 }
 
+func TestToSecurityRequirements(t *testing.T) {
+	t.Parallel()
+	requirements := toSecurityRequirements([]*goa3.SecurityRequirement{
+		{
+			AdditionalProperties: []*goa3.NamedStringArray{
+				{Name: "BearerAuth"},
+			},
+		},
+		{
+			AdditionalProperties: []*goa3.NamedStringArray{
+				{Name: ""},
+			},
+		},
+		{},
+	})
+
+	require.Len(t, requirements, 3)
+
+	scopes, ok := requirements[0].Requirements.Get("BearerAuth")
+	require.True(t, ok)
+	assert.Empty(t, scopes)
+	assert.False(t, requirements[0].ContainsEmptyRequirement)
+
+	out, err := yaml.Marshal(requirements[0])
+	require.NoError(t, err)
+	assert.Equal(t, "BearerAuth: []\n", string(out))
+
+	assert.Equal(t, 0, requirements[1].Requirements.Len())
+	assert.True(t, requirements[1].ContainsEmptyRequirement)
+
+	out, err = yaml.Marshal(requirements[1])
+	require.NoError(t, err)
+	assert.Equal(t, "{}\n", string(out))
+
+	assert.Equal(t, 0, requirements[2].Requirements.Len())
+	assert.True(t, requirements[2].ContainsEmptyRequirement)
+}
+
 func TestToDefault(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

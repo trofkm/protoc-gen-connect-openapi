@@ -15,9 +15,11 @@
 package gnostic
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 
 	"connectrpc.com/protoc-gen-connect-openapi/internal/converter/options"
 	"connectrpc.com/protoc-gen-connect-openapi/internal/converter/util"
@@ -85,18 +87,13 @@ func schemaWithAnnotations(opts options.Options, schema *base.Schema, gnosticSch
 		schema.WriteOnly = &gnosticSchema.WriteOnly
 	}
 	if gnosticSchema.Example != nil {
-		// If the example is defined with the YAML option
-		if gnosticSchema.Example.Yaml != "" {
-			var v string
-			if err := yaml.Unmarshal([]byte(gnosticSchema.Example.GetYaml()), &v); err != nil {
-				var node any
-				if err := yaml.Unmarshal([]byte(gnosticSchema.Example.GetYaml()), &node); err != nil {
-					opts.Logger.Warn("unable to unmarshal example", slog.Any("error", err))
-				} else {
-					schema.Examples = append(schema.Examples, expandExampleEntry(node))
-				}
+		// Decode as-is so scalars keep their YAML type.
+		if yamlText := gnosticSchema.Example.GetYaml(); yamlText != "" {
+			var node any
+			if err := yaml.Unmarshal([]byte(yamlText), &node); err != nil {
+				opts.Logger.Warn("unable to unmarshal example", slog.Any("error", err))
 			} else {
-				schema.Examples = append(schema.Examples, utils.CreateStringNode(v))
+				schema.Examples = append(schema.Examples, expandExampleEntry(node))
 			}
 		}
 		// If the example is defined with google.protobuf.Any
@@ -259,12 +256,30 @@ func schemaWithAnnotations(opts options.Options, schema *base.Schema, gnosticSch
 
 func expandExampleEntry(entry any) *yaml.Node {
 	switch vv := entry.(type) {
-	//Handle mapping nodes
+	// The decoder uses map[string]any for string keys and map[any]any otherwise.
+	case map[string]any:
+		node := utils.CreateEmptyMapNode()
+		keys := make([]string, 0, len(vv))
+		for k := range vv {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			node.Content = append(node.Content, utils.CreateStringNode(k), expandExampleEntry(vv[k]))
+		}
+		return node
 	case map[any]any:
 		node := utils.CreateEmptyMapNode()
-		for k, v := range vv {
-			keyNode := utils.CreateStringNode(k.(string))
-			node.Content = append(node.Content, keyNode, expandExampleEntry(v))
+		keys := make([]any, 0, len(vv))
+		for k := range vv {
+			keys = append(keys, k)
+		}
+		// Sort by type and value so non-string keys render deterministically.
+		slices.SortFunc(keys, func(a, b any) int {
+			return cmp.Compare(fmt.Sprintf("%T:%v", a, a), fmt.Sprintf("%T:%v", b, b))
+		})
+		for _, k := range keys {
+			node.Content = append(node.Content, expandExampleEntry(k), expandExampleEntry(vv[k]))
 		}
 		return node
 	// Handle sequence nodes
@@ -274,12 +289,20 @@ func expandExampleEntry(entry any) *yaml.Node {
 			node.Content = append(node.Content, expandExampleEntry(v))
 		}
 		return node
+	case bool:
+		return utils.CreateBoolNode(strconv.FormatBool(vv))
 	case float64:
-		return utils.CreateFloatNode(fmt.Sprintf("%v", vv))
+		return utils.CreateFloatNode(strconv.FormatFloat(vv, 'g', -1, 64))
 	case int:
-		return utils.CreateIntNode(fmt.Sprintf("%v", vv))
+		return utils.CreateIntNode(strconv.Itoa(vv))
+	case int64:
+		return utils.CreateIntNode(strconv.FormatInt(vv, 10))
+	case uint64:
+		return utils.CreateIntNode(strconv.FormatUint(vv, 10))
 	case string:
 		return utils.CreateStringNode(vv)
+	case nil:
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
 	default:
 		return utils.CreateStringNode(fmt.Sprintf("%v", vv))
 	}

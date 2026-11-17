@@ -48,7 +48,7 @@ func PathItemWithMethodAnnotations(opts options.Options, item *v3.PathItem, md p
 		// GET and HEAD carry no body; for allow-get the request goes in the
 		// query string, so a request body only belongs on the other methods.
 		if gnosticOperation.RequestBody != nil && method != "get" && method != "head" {
-			oper.RequestBody = toRequestBody(opts, gnosticOperation.RequestBody)
+			oper.RequestBody = mergeRequestBody(oper.RequestBody, toRequestBody(opts, gnosticOperation.RequestBody))
 		}
 
 		if gnosticOperation.Responses != nil {

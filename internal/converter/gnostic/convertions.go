@@ -70,12 +70,20 @@ func toSecurityRequirements(securityReq []*goa3.SecurityRequirement) []*base.Sec
 	for i, req := range securityReq {
 		reqs := orderedmap.New[string, []string]()
 		for _, prop := range req.AdditionalProperties {
-			reqs.Set(prop.Name, prop.Value.Value)
+			// A requirement entry needs a scheme name.
+			if prop == nil || prop.Name == "" {
+				continue
+			}
+			var scopes []string
+			if prop.Value != nil {
+				scopes = prop.Value.Value
+			}
+			reqs.Set(prop.Name, scopes)
 		}
 
 		result[i] = &base.SecurityRequirement{
 			Requirements:             reqs,
-			ContainsEmptyRequirement: len(req.AdditionalProperties) == 0,
+			ContainsEmptyRequirement: reqs.Len() == 0,
 		}
 	}
 	return result
@@ -135,6 +143,95 @@ func toRequestBody(opts options.Options, bodyOrRef *goa3.RequestBodyOrReference)
 		Required:    trueOrNil(rbody.Required),
 		Extensions:  toExtensions(rbody.SpecificationExtension),
 	}
+}
+
+// mergeRequestBody merges a gnostic request body into the generated one.
+// Fields the annotation doesn't set keep their generated values.
+func mergeRequestBody(existing, annotated *v3.RequestBody) *v3.RequestBody {
+	if annotated == nil {
+		return existing
+	}
+	// A referenced body can't be merged with an inline one.
+	if existing == nil || annotated.Reference != "" {
+		return annotated
+	}
+
+	merged := *annotated
+	if merged.Required == nil {
+		merged.Required = existing.Required
+	}
+	if merged.Description == "" {
+		merged.Description = existing.Description
+	}
+	merged.Extensions = mergeExtensions(existing.Extensions, annotated.Extensions)
+	if annotated.Content == nil || annotated.Content.Len() == 0 {
+		merged.Content = existing.Content
+		return &merged
+	}
+
+	content := orderedmap.New[string, *v3.MediaType]()
+	for pair := annotated.Content.First(); pair != nil; pair = pair.Next() {
+		mediaType := pair.Value()
+		if existing.Content != nil {
+			if existingMediaType, ok := existing.Content.Get(pair.Key()); ok {
+				mediaType = mergeMediaType(existingMediaType, mediaType)
+			}
+		}
+		content.Set(pair.Key(), mediaType)
+	}
+	merged.Content = content
+	return &merged
+}
+
+// mergeMediaType fills fields the annotation didn't set from the generated
+// media type.
+func mergeMediaType(existing, annotated *v3.MediaType) *v3.MediaType {
+	if annotated == nil {
+		return existing
+	}
+	if existing == nil {
+		return annotated
+	}
+
+	merged := *existing
+	if annotated.Schema != nil {
+		merged.Schema = annotated.Schema
+	}
+	if annotated.ItemSchema != nil {
+		merged.ItemSchema = annotated.ItemSchema
+	}
+	if annotated.Example != nil {
+		merged.Example = annotated.Example
+	}
+	if annotated.Examples != nil {
+		merged.Examples = annotated.Examples
+	}
+	if annotated.Encoding != nil {
+		merged.Encoding = annotated.Encoding
+	}
+	if annotated.ItemEncoding != nil {
+		merged.ItemEncoding = annotated.ItemEncoding
+	}
+	merged.Extensions = mergeExtensions(existing.Extensions, annotated.Extensions)
+	return &merged
+}
+
+// mergeExtensions combines extension maps, letting the annotation override
+// generated keys.
+func mergeExtensions(existing, override *orderedmap.Map[string, *yaml.Node]) *orderedmap.Map[string, *yaml.Node] {
+	if override == nil {
+		return existing
+	}
+	merged := orderedmap.New[string, *yaml.Node]()
+	if existing != nil {
+		for pair := existing.First(); pair != nil; pair = pair.Next() {
+			merged.Set(pair.Key(), pair.Value())
+		}
+	}
+	for pair := override.First(); pair != nil; pair = pair.Next() {
+		merged.Set(pair.Key(), pair.Value())
+	}
+	return merged
 }
 
 // trueOrNil maps a proto3 bool, which can't distinguish false from unset, to
